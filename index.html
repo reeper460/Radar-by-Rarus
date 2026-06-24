@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Offline Radar Simulator</title>
+  <style>
+    :root { --ng: #00ffcc; --bd: #0a0f12; --pb: rgba(10, 15, 18, 0.9); --danger: #ff3333; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bd); font-family: sans-serif; overflow: hidden; color: #fff; user-select: none; touch-action: none; }
+    
+    .top-panel { position: fixed; top: 10px; left: 10px; right: 10px; background: var(--pb); border: 1px solid var(--ng); border-radius: 8px; padding: 10px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; z-index: 100; }
+    .panel-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .btn { background: #122224; border: 1px solid var(--ng); color: var(--ng); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+    .btn-danger { border-color: var(--danger); color: var(--danger); }
+    .input-field { background: #000; border: 1px solid #334444; color: var(--ng); width: 60px; padding: 4px; border-radius: 4px; text-align: center; }
+    
+    #viewport { position: absolute; width: 100vw; height: 100vh; overflow: hidden; top: 0; left: 0; cursor: grab; }
+    #viewport:active { cursor: grabbing; }
+    #map-container { position: absolute; top: 0; left: 0; width: 2000px; height: 2000px; transform-origin: 0 0; }
+    #map-bg { position: absolute; width: 100%; height: 100%; object-fit: contain; opacity: 0.4; pointer-events: none; }
+    #radar-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+    
+    .side-panel { position: fixed; right: 10px; top: 120px; width: 280px; max-width: calc(100vw - 20px); background: var(--pb); border: 1px solid var(--ng); border-radius: 8px; padding: 12px; z-index: 110; display: none; }
+    .side-panel p { margin: 6px 0; font-size: 0.95rem; }
+    
+    .modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #111618; border: 2px solid var(--ng); padding: 20px; border-radius: 8px; z-index: 200; display: none; flex-direction: column; gap: 10px; width: 300px; max-width: calc(100vw - 30px); max-height: calc(100vh - 30px); overflow-y: auto; }
+    .modal input, .modal select { background: #000; border: 1px solid var(--ng); color: #fff; padding: 6px; border-radius: 4px; }
+    
+    #aircraft-list-panel { position: fixed; left: 10px; top: 120px; width: 250px; max-width: calc(100vw - 20px); background: var(--pb); border: 1px solid var(--ng); border-radius: 8px; padding: 12px; z-index: 110; max-height: 60vh; overflow-y: auto; display: none; }
+    .aircraft-item { padding: 6px; border-bottom: 1px solid #223333; cursor: pointer; }
+    .aircraft-item.selected { background: var(--ng); color: #000; font-weight: bold; }
+
+    .field-label { font-size: 0.8rem; color: #88aaaa; margin-bottom: -4px; }
+
+    #login-screen { position: fixed; inset: 0; background: var(--bd); z-index: 500; display: flex; align-items: center; justify-content: center; }
+    #login-box { background: #111618; border: 2px solid var(--ng); border-radius: 8px; padding: 24px; width: 300px; display: flex; flex-direction: column; gap: 10px; }
+    #login-box input { background: #000; border: 1px solid var(--ng); color: #fff; padding: 8px; border-radius: 4px; }
+    #login-box label { font-size: 0.85rem; color: #88aaaa; }
+    #login-error { color: var(--danger); font-size: 0.85rem; min-height: 1em; }
+    #user-badge { position: fixed; top: 10px; right: 10px; z-index: 101; background: var(--pb); border: 1px solid var(--ng); border-radius: 6px; padding: 6px 10px; font-size: 0.85rem; }
+    #user-badge.is-admin { border-color: var(--danger); color: var(--danger); }
+
+    #admin-panel { position: fixed; right: 10px; top: 120px; width: 250px; max-width: calc(100vw - 20px); z-index: 110; background: var(--pb); border: 1px solid var(--danger); border-radius: 8px; padding: 10px; display: none; flex-direction: column; gap: 6px; max-height: 75vh; overflow-y: auto; }
+  </style>
+</head>
+<body>
+
+  <!-- ЭКРАН ВХОДА -->
+  <div id="login-screen">
+    <div id="login-box">
+      <h3 style="color:var(--ng); text-align:center;">✈️ Вход на радар</h3>
+      <label>Ваш игровой ник:</label>
+      <input type="text" id="login-nick" placeholder="Например: Pilot_Ivan">
+      <label>Пароль игрока (выдаёт админ сервера):</label>
+      <input type="password" id="login-pass" placeholder="Пароль">
+      <button class="btn" id="btn-login" style="margin-top:6px;">Войти</button>
+      <div id="login-error"></div>
+    </div>
+  </div>
+
+  <!-- БЕЙДЖ ТЕКУЩЕГО ИГРОКА -->
+  <div id="user-badge" style="display:none;">👤 <span id="badge-nick">-</span></div>
+
+  <!-- ВЕРХНЯЯ ИГРОВАЯ ПАНЕЛЬ -->
+  <div class="top-panel">
+    <div class="panel-row">
+      <button class="btn" id="btn-zoom-in">➕</button>
+      <button class="btn" id="btn-zoom-out">➖</button>
+    </div>
+    <div class="panel-row">
+      <button class="btn" id="btn-create-ac">✈️ Создать Борт</button>
+      <button class="btn" id="btn-toggle-hangar">🛩️ Ангар</button>
+      <button class="btn btn-danger" id="btn-toggle-admin" style="display:none;">🛠️ Админ</button>
+    </div>
+    <div class="panel-row">
+      <div id="total-flights" style="color:var(--ng)">Бортов: 0</div>
+      <div id="clock" style="font-family:monospace; font-size:0.95rem; color:var(--ng); text-align:center; line-height:1.3;">--.--.----<br>00:00</div>
+    </div>
+  </div>
+
+  <!-- ВЬЮПОРТ ДЛЯ ПЕРЕТАСКИВАНИЯ И ХОЛСТ -->
+  <div id="viewport">
+    <div id="map-container">
+      <img id="map-bg" src="">
+      <canvas id="radar-canvas" width="2000" height="2000"></canvas>
+    </div>
+  </div>
+
+  <!-- ПАНЕЛЬ АДМИНА (СВОРАЧИВАЕМАЯ, ВКЛЮЧАЕТ НАСТРОЙКИ КАРТЫ) -->
+  <div id="admin-panel">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <strong style="color:var(--danger);">🛠️ Админ-панель</strong>
+      <button class="btn btn-danger" id="btn-close-admin" style="padding:2px 8px;">❌</button>
+    </div>
+    <div class="panel-row" style="margin-top:6px;">
+      <label class="field-label" style="margin-bottom:0;">Ширина (км):</label><input type="number" id="map-width-km" class="input-field" value="300">
+    </div>
+    <div class="panel-row">
+      <label class="field-label" style="margin-bottom:0;">Высота (км):</label><input type="number" id="map-height-km" class="input-field" value="300">
+    </div>
+    <label class="btn" style="text-align:center;">🗺️ Загрузить карту<input type="file" id="map-upload" accept="image/*" style="display:none;"></label>
+    <button class="btn btn-danger" id="btn-admin-newmap">🗺️ Удалить карту</button>
+    <div style="border-top:1px solid #442222; margin:4px 0;"></div>
+    <label class="field-label" style="margin-bottom:0;">Игровая дата (РП-время):</label>
+    <div class="panel-row" style="gap:4px;">
+      <input type="number" id="admin-game-day" class="input-field" placeholder="ДД" min="1" max="31" style="width:55px;">
+      <input type="number" id="admin-game-month" class="input-field" placeholder="ММ" min="1" max="12" style="width:55px;">
+      <input type="number" id="admin-game-year" class="input-field" placeholder="ГГГГ" min="1900" max="2200" style="width:75px;">
+    </div>
+    <button class="btn btn-danger" id="btn-set-game-date">⏱️ Установить дату</button>
+    <div style="border-top:1px solid #442222; margin:4px 0;"></div>
+    <label class="field-label" style="margin-bottom:0;">Пароль для игроков:</label>
+    <input type="text" id="admin-player-pass" class="input-field" style="width:100%;" placeholder="например FrioRP69sas">
+    <button class="btn btn-danger" id="btn-set-player-pass">🔑 Установить пароль игроков</button>
+    <div style="border-top:1px solid #442222; margin:4px 0;"></div>
+    <button class="btn btn-danger" id="btn-show-nicks">📋 Список ников игроков</button>
+    <div id="nicks-list" style="display:none; max-height:150px; overflow-y:auto; font-size:0.85rem; background:#000; padding:6px; border-radius:4px;"></div>
+    <div style="border-top:1px solid #442222; margin:4px 0;"></div>
+    <button class="btn btn-danger" id="btn-admin-wipe-cities">🏙️ Удалить все города</button>
+    <button class="btn btn-danger" id="btn-admin-wipe-fleet">✈️ Удалить все самолёты</button>
+    <button class="btn btn-danger" id="btn-admin-wipe-flights">📍 Удалить все рейсы</button>
+    <button class="btn btn-danger" id="btn-admin-wipe-all">☢️ ПОЛНЫЙ ВАЙП</button>
+  </div>
+
+  <!-- СПИСОК САМОЛЕТОВ (СВОРАЧИВАЕМЫЙ) -->
+  <div id="aircraft-list-panel">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 5px;">
+      <h4 style="color:var(--ng);">🛩️ Ваш Ангар:</h4>
+      <button class="btn" id="btn-close-hangar" style="padding:2px 8px;">❌</button>
+    </div>
+    <div id="hangar-list"></div>
+  </div>
+
+  <!-- ИНФО-ПАНЕЛЬ САМОЛЕТА (ПРАВАЯ ПАНЕЛЬ) -->
+  <div class="side-panel" id="info-panel">
+    <h3 id="info-name">-</h3>
+    <p>🏢 <strong>Авиакомпания:</strong> <span id="info-owner">-</span></p>
+    <p>⚙️ <strong>Статус:</strong> <span id="info-status">-</span></p>
+    <p>⚡ <strong>Скорость:</strong> <span id="info-speed">0</span> км/ч</p>
+    <p>🏔️ <strong>Высота:</strong> <span id="info-altitude">0</span> фт</p>
+    <p>👥 <strong>Пассажиры/Груз:</strong> <span id="info-load">0</span></p>
+    <button class="btn btn-danger" id="btn-delete-flight" style="width:100%; margin-top:6px; display:none;">🗑️ Удалить рейс</button>
+    <button class="btn" style="width:100%; margin-top:6px;" onclick="document.getElementById('info-panel').style.display='none'; selectedFlightInfo = null;">❌ Закрыть</button>
+  </div>
+
+  <!-- МОДАЛКА СОЗДАНИЯ САМОЛЕТА -->
+  <div class="modal" id="create-modal">
+    <h3>Новый самолет</h3>
+    <label class="field-label">Название самолета:</label>
+    <input type="text" id="ac-name" placeholder="Например: Boeing 737-800">
+    <label class="field-label">Максимальная скорость (км/ч):</label>
+    <input type="number" id="ac-max-speed" placeholder="Макс. скорость" value="850">
+    <label class="field-label" id="ac-load-label">Максимум пассажиров (чел):</label>
+    <input type="number" id="ac-max-load" placeholder="Макс. загрузка" value="180">
+    <label class="field-label">Тип самолёта:</label>
+    <select id="ac-type">
+      <option value="Пассажирский">Пассажирский</option>
+      <option value="Грузовой">Грузовой</option>
+    </select>
+    <div style="display:flex; gap:10px;">
+      <button class="btn" id="btn-modal-save" style="flex:1">Создать</button>
+      <button class="btn" id="btn-modal-cancel" style="flex:1; border-color:#f33; color:#f33;">Отмена</button>
+    </div>
+  </div>
+
+  <!-- FIREBASE SDK -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+  <script>
+    // ===================================================================
+    // НАСТРОЙКА FIREBASE — ВСТАВЬ СВОИ ДАННЫЕ СЮДА (см. инструкцию ниже)
+    // ===================================================================
+    const firebaseConfig = {
+      apiKey: "AIzaSyCQvVMAaxTXN7lmSryh9MEm6JhtInMZJlg",
+      authDomain: "frio-rp-radar-s-15.firebaseapp.com",
+      databaseURL: "https://frio-rp-radar-s-15-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "frio-rp-radar-s-15",
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    // Пароль для входа админа (поменяй на свой!)
+    const ADMIN_PASSWORD = "Frio619482tt";
+
+    // ===================================================================
+    // СИСТЕМА ВХОДА (ИГРОК / АДМИН)
+    // ===================================================================
+    let currentNick = null;
+    let isAdmin = false;
+
+    document.getElementById('btn-login').addEventListener('click', () => {
+      const nick = document.getElementById('login-nick').value.trim();
+      const pass = document.getElementById('login-pass').value;
+      const errEl = document.getElementById('login-error');
+
+      if (!nick) { errEl.textContent = 'Введите игровой ник.'; return; }
+      if (!pass) { errEl.textContent = 'Введите пароль.'; return; }
+
+      // Проверяем пароль через базу (список разрешённых паролей игроков хранится в Firebase)
+      db.ref('allowedPasswords/' + pass).once('value').then(snap => {
+        const isAdminPass = (pass === ADMIN_PASSWORD);
+        if (isAdminPass || snap.exists()) {
+          currentNick = nick;
+          isAdmin = isAdminPass;
+          // Сохраняем факт регистрации ника под этим паролем, чтобы админ мог посмотреть кто забыл свой ник.
+          // Пароль не хранится в открытом виде рядом с ником в отдельном читаемом поле — только связь "ник вошёл этим паролем", без самого текста пароля.
+          db.ref('registeredNicks/' + nick).set({ lastLogin: Date.now(), isAdmin: isAdminPass });
+          document.getElementById('login-screen').style.display = 'none';
+          document.getElementById('user-badge').style.display = 'block';
+          document.getElementById('user-badge').classList.toggle('is-admin', isAdmin);
+          document.getElementById('badge-nick').textContent = nick + (isAdmin ? ' (АДМИН)' : '');
+          document.getElementById('btn-toggle-admin').style.display = isAdmin ? 'inline-block' : 'none';
+          document.getElementById('map-width-km').readOnly = !isAdmin;
+          document.getElementById('map-height-km').readOnly = !isAdmin;
+          startApp();
+        } else {
+          errEl.textContent = 'Неверный пароль. Спросите пароль у админа сервера.';
+        }
+      }).catch(() => {
+        errEl.textContent = 'Не удалось подключиться к серверу. Проверьте Firebase-настройки.';
+      });
+    });
+
+  </script>
+
+  <script>
+    function startApp() {
+
+    // --- ИГРОВЫЕ ЧАСЫ: 1 реальная минута = 1 игровой час, идут постоянно от точки отсчёта в Firebase ---
+    // gameTime/epochStartMs — реальное время (Date.now()) в момент, когда зафиксирована игровая дата
+    // gameTime/gameDateMs — соответствующая игровая дата (как timestamp) на тот момент
+    const clockEl = document.getElementById('clock');
+    const MS_PER_GAME_HOUR_REAL = 120 * 1000; // 1 игровой час = 120 реальных секунд (48 реал. минут = 1 игровые сутки)
+    const GAME_HOUR_MS = 60 * 60 * 1000; // 1 игровой час в "игровых" мс
+    let gameTimeRef = { epochStartMs: Date.now(), gameDateMs: new Date('2013-08-01T00:00:00Z').getTime() };
+
+    let gameTimeInitialized = false;
+    db.ref('gameTime').on('value', snap => {
+      const v = snap.val();
+      if (v && v.epochStartMs && v.gameDateMs) { 
+        gameTimeRef = v; 
+        gameTimeInitialized = true;
+      } else if (!gameTimeInitialized) { 
+        // Пишем дефолт только один раз, если в базе реально ничего нет
+        gameTimeInitialized = true;
+        db.ref('gameTime').set(gameTimeRef); 
+      }
+    });
+
+    function getCurrentGameDate() {
+      const realMsPassed = Date.now() - gameTimeRef.epochStartMs;
+      const gameMsPassed = (realMsPassed / MS_PER_GAME_HOUR_REAL) * GAME_HOUR_MS;
+      return new Date(gameTimeRef.gameDateMs + gameMsPassed);
+    }
+
+    function updateClock() {
+      const d = getCurrentGameDate();
+      const hh = d.getUTCHours().toString().padStart(2, '0');
+      const mm = d.getUTCMinutes().toString().padStart(2, '0');
+      const dateStr = d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'UTC' });
+      clockEl.innerHTML = `${dateStr}<br>${hh}:${mm}`;
+    }
+
+    // Админ может вручную выставить новую игровую дату — дальше время снова пойдёт само от этой точки
+    function setGameDate(newDateStr) {
+      const newGameMs = new Date(newDateStr + 'T00:00:00Z').getTime();
+      if (isNaN(newGameMs)) { alert('Некорректная дата.'); return; }
+      const newRef = { epochStartMs: Date.now(), gameDateMs: newGameMs };
+      db.ref('gameTime').set(newRef).then(() => {
+        gameTimeRef = newRef;
+        updateClock();
+      }).catch(err => {
+        alert('Не удалось сохранить дату: ' + err.message);
+      });
+    }
+
+    // --- СИСТЕМА ДВИЖЕНИЯ И ЗУМА КАРТЫ ---
+    let zoomScale = 1; let posX = -500; let posY = -500; 
+    const mapContainer = document.getElementById('map-container');
+    const viewport = document.getElementById('viewport');
+
+    function updateTransform() { mapContainer.style.transform = `translate(${posX}px, ${posY}px) scale(${zoomScale})`; }
+    posX = (window.innerWidth - 2000 * zoomScale) / 2;
+    posY = (window.innerHeight - 2000 * zoomScale) / 2;
+    updateTransform();
+
+    function zoomAtCenter(newScale) {
+      const cx = window.innerWidth / 2; const cy = window.innerHeight / 2;
+      // Точка карты, которая сейчас под центром экрана
+      const mapX = (cx - posX) / zoomScale; const mapY = (cy - posY) / zoomScale;
+      zoomScale = newScale;
+      // Пересчитываем posX/posY так, чтобы та же точка карты осталась под центром экрана
+      posX = cx - mapX * zoomScale; posY = cy - mapY * zoomScale;
+      updateTransform();
+    }
+    document.getElementById('btn-zoom-in').addEventListener('click', () => zoomAtCenter(Math.min(3, zoomScale + 0.2)));
+    document.getElementById('btn-zoom-out').addEventListener('click', () => zoomAtCenter(Math.max(0.3, zoomScale - 0.2)));
+
+    // Физика драга карты пальцем/мышкой
+    let isDragging = false; let startX, startY; let isClickAction = true; 
+    function dragStart(e) {
+      if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+      isDragging = true; isClickAction = true;
+      const pageX = e.touches ? e.touches[0].pageX : e.pageX; const pageY = e.touches ? e.touches[0].pageY : e.pageY;
+      startX = pageX - posX; startY = pageY - posY;
+    }
+    function dragMove(e) {
+      if (!isDragging) return; isClickAction = false; 
+      const pageX = e.touches ? e.touches[0].pageX : e.pageX; const pageY = e.touches ? e.touches[0].pageY : e.pageY;
+      posX = pageX - startX; posY = pageY - startY; updateTransform();
+    }
+    function dragEnd() { isDragging = false; }
+
+    viewport.addEventListener('mousedown', dragStart); window.addEventListener('mousemove', dragMove); window.addEventListener('mouseup', dragEnd);
+    viewport.addEventListener('touchstart', dragStart, { passive: true }); window.addEventListener('touchmove', dragMove, { passive: true }); window.addEventListener('touchend', dragEnd);
+
+    // --- ОБЩИЕ ДАННЫЕ (СИНХРОНИЗИРУЮТСЯ СО ВСЕМИ ИГРОКАМИ ЧЕРЕЗ FIREBASE) ---
+    const canvas = document.getElementById('radar-canvas'); const ctx = canvas.getContext('2d'); const gridSize = 15;
+    let cities = {}, activeFlights = {}, selectedFlightInfo = null, routeStep = 0, tempCity = null;
+
+    // Личный ангар игрока (свои самолёты) — тоже общий на сервере, привязан к нику
+    let fleet = {};
+    let selectedAC = null;
+
+    const FT_PER_M = 3.28084;
+
+    // Подписки на изменения в реальном времени
+    db.ref('cities').on('value', snap => { cities = snap.val() || {}; });
+    db.ref('flights').on('value', snap => { activeFlights = snap.val() || {}; });
+    db.ref('fleet/' + currentNick).on('value', snap => { fleet = snap.val() || {}; updateHangarUI(); });
+    db.ref('mapImage').on('value', snap => { const url = snap.val(); if (url) document.getElementById('map-bg').src = url; });
+
+    // Подгрузка размеров карты (общие на сервере)
+    db.ref('mapSize').on('value', snap => {
+      const s = snap.val();
+      if (s) { document.getElementById('map-width-km').value = s.w; document.getElementById('map-height-km').value = s.h; }
+    });
+    document.getElementById('map-width-km').addEventListener('change', saveMapSize);
+    document.getElementById('map-height-km').addEventListener('change', saveMapSize);
+    function saveMapSize() {
+      if (!isAdmin) return;
+      db.ref('mapSize').set({ w: parseFloat(document.getElementById('map-width-km').value) || 300, h: parseFloat(document.getElementById('map-height-km').value) || 300 });
+    }
+
+    // Загрузка карты (только админ, перезаписывает общую карту для всех игроков)
+    document.getElementById('map-upload').addEventListener('change', function(e) {
+      if (!isAdmin) return;
+      if(e.target.files && e.target.files[0]) { 
+        const r = new FileReader(); 
+        r.onload = (ev) => { db.ref('mapImage').set(ev.target.result); }; 
+        r.readAsDataURL(e.target.files[0]); 
+      }
+    });
+
+    // --- ОТКРЫТИЕ/ЗАКРЫТИЕ СВОРАЧИВАЕМЫХ ПАНЕЛЕЙ (АНГАР И АДМИН) ---
+    const hangarPanel = document.getElementById('aircraft-list-panel');
+    const adminPanel = document.getElementById('admin-panel');
+    document.getElementById('btn-toggle-hangar').addEventListener('click', () => {
+      hangarPanel.style.display = (hangarPanel.style.display === 'block') ? 'none' : 'block';
+    });
+    document.getElementById('btn-close-hangar').addEventListener('click', () => hangarPanel.style.display = 'none');
+    document.getElementById('btn-toggle-admin').addEventListener('click', () => {
+      adminPanel.style.display = (adminPanel.style.display === 'flex') ? 'none' : 'flex';
+    });
+    document.getElementById('btn-close-admin').addEventListener('click', () => adminPanel.style.display = 'none');
+
+    // --- СОЗДАНИЕ САМОЛЁТА ---
+    const createModal = document.getElementById('create-modal');
+    document.getElementById('btn-create-ac').addEventListener('click', () => createModal.style.display = 'flex');
+    document.getElementById('btn-modal-cancel').addEventListener('click', () => createModal.style.display = 'none');
+
+    // Подпись поля груза меняется в зависимости от типа борта
+    const acTypeSelect = document.getElementById('ac-type');
+    const acLoadLabel = document.getElementById('ac-load-label');
+    acTypeSelect.addEventListener('change', () => {
+      acLoadLabel.textContent = acTypeSelect.value === 'Грузовой' ? 'Максимум груза (кг):' : 'Максимум пассажиров (чел):';
+    });
+
+    document.getElementById('btn-modal-save').addEventListener('click', () => {
+      const id = 'ac_' + Date.now();
+      const newAC = { 
+        id, 
+        name: document.getElementById('ac-name').value || "Борт", 
+        maxSpeed: parseFloat(document.getElementById('ac-max-speed').value) || 800, 
+        maxLoad: parseInt(document.getElementById('ac-max-load').value) || 100, 
+        type: document.getElementById('ac-type').value,
+        owner: currentNick
+      };
+      db.ref('fleet/' + currentNick + '/' + id).set(newAC);
+      createModal.style.display = 'none'; document.getElementById('ac-name').value = '';
+    });
+
+    function updateHangarUI() {
+      const list = document.getElementById('hangar-list'); list.innerHTML = '';
+      Object.values(fleet).forEach(ac => {
+        const row = document.createElement('div');
+        row.style.display = 'flex'; row.style.alignItems = 'center'; row.style.gap = '6px';
+
+        const item = document.createElement('div');
+        item.className = 'aircraft-item';
+        item.style.flex = '1';
+        item.innerText = "✈️ " + ac.name;
+        item.onclick = (e) => { 
+          e.stopPropagation();
+          if (selectedAC && selectedAC.id === ac.id) { item.classList.remove('selected'); selectedAC = null; routeStep = 0; alert('Выбор борта отменён.'); return; }
+          document.querySelectorAll('.aircraft-item').forEach(el => el.classList.remove('selected')); item.classList.add('selected'); 
+          selectedAC = ac; routeStep = 1; alert('Борт выбран. Кликните на город ОТПРАВЛЕНИЯ.\n(Для отмены кликните на него же в ангаре)'); 
+        };
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-danger'; delBtn.style.padding = '4px 8px'; delBtn.innerText = '🗑️';
+        delBtn.onclick = (e) => {
+          e.stopPropagation();
+          if (confirm(`Удалить борт "${ac.name}" из ангара?`)) {
+            db.ref('fleet/' + currentNick + '/' + ac.id).remove();
+            if (selectedAC && selectedAC.id === ac.id) { selectedAC = null; routeStep = 0; }
+          }
+        };
+
+        row.appendChild(item); row.appendChild(delBtn);
+        list.appendChild(row);
+      });
+    }
+
+    // Обработка кликов по карте (только если её не перетаскивали)
+    viewport.addEventListener('click', function(e) {
+      if (!isClickAction) return;
+      if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.closest('#aircraft-list-panel') || e.target.closest('#info-panel')) return;
+
+      const rect = canvas.getBoundingClientRect(); 
+      const cx = (e.clientX - rect.left) * (2000 / rect.width); const cy = (e.clientY - rect.top) * (2000 / rect.height);
+
+      let clickedF = null; Object.values(activeFlights).forEach(f => { if(Math.hypot(f.curX - cx, f.curY - cy) < 22) clickedF = f; });
+      if(clickedF) { 
+        selectedFlightInfo = clickedF; 
+        document.getElementById('info-panel').style.display = 'block'; 
+        document.getElementById('btn-delete-flight').style.display = isAdmin ? 'block' : 'none';
+        return; 
+      }
+      
+      let clickedC = null; Object.values(cities).forEach(c => { if(Math.hypot(c.x - cx, c.y - cy) < 20) clickedC = c; });
+
+      // Клик по существующему городу вне процесса создания маршрута — показать инфо/удаление (только админу)
+      if (routeStep === 0 && clickedC && isAdmin) {
+        if (confirm(`Удалить город "${clickedC.name}"? Действие нельзя отменить.`)) {
+          db.ref('cities/' + clickedC.id).remove();
+        }
+        return;
+      }
+
+      if (routeStep === 1 && clickedC) { tempCity = clickedC; routeStep = 2; alert('Теперь кликните на город ПРИБЫТИЯ'); return; }
+      if (routeStep === 2 && clickedC) {
+        if(clickedC.id === tempCity.id) return;
+        const flightId = 'fl_' + Date.now() + '_' + Math.floor(Math.random()*1000);
+        db.ref('flights/' + flightId).set({ id: flightId, meta: selectedAC, fromCity: tempCity, toCity: clickedC, curX: tempCity.x, curY: tempCity.y, progress: 0, speed: 50, altitude: 0, status: "Взлет", actualLoad: Math.floor(Math.random()*selectedAC.maxLoad), isReturning: false, createdBy: currentNick });
+        routeStep = 0; selectedAC = null; document.querySelectorAll('.aircraft-item').forEach(el => el.classList.remove('selected')); return;
+      }
+      if (routeStep === 0 && !clickedC) {
+        const sx = Math.round(cx / gridSize) * gridSize; const sy = Math.round(cy / gridSize) * gridSize;
+        if(!Object.values(cities).some(c => c.x === sx && c.y === sy)) { 
+          const n = prompt("Название города:"); 
+          if(n) { const cid = 'city_' + Date.now(); db.ref('cities/' + cid).set({ id: cid, x: sx, y: sy, name: n, createdBy: currentNick }); }
+        }
+      }
+    });
+
+    document.getElementById('btn-delete-flight').addEventListener('click', () => {
+      if (!selectedFlightInfo) return;
+      if (confirm('Удалить этот рейс? Действие нельзя отменить.')) {
+        db.ref('flights/' + selectedFlightInfo.id).remove();
+        document.getElementById('info-panel').style.display = 'none';
+        selectedFlightInfo = null;
+      }
+    });
+
+    // --- АДМИН-ПАНЕЛЬ ---
+    document.getElementById('btn-show-nicks').addEventListener('click', () => {
+      const el = document.getElementById('nicks-list');
+      if (el.style.display === 'block') { el.style.display = 'none'; return; }
+      db.ref('registeredNicks').once('value').then(snap => {
+        const data = snap.val() || {};
+        const rows = Object.keys(data).sort().map(nick => {
+          const v = data[nick];
+          const dt = new Date(v.lastLogin).toLocaleString('ru-RU');
+          return `${v.isAdmin ? '🛠️' : '👤'} ${nick} — посл. вход: ${dt}`;
+        });
+        el.innerHTML = rows.length ? rows.join('<br>') : 'Пока никто не входил.';
+        el.style.display = 'block';
+      });
+    });
+    document.getElementById('btn-set-player-pass').addEventListener('click', () => {
+      if (!isAdmin) return;
+      const newPass = document.getElementById('admin-player-pass').value.trim();
+      if (!newPass) { alert('Введите пароль.'); return; }
+      if (newPass === ADMIN_PASSWORD) { alert('Этот пароль совпадает с админским — выберите другой.'); return; }
+      if (confirm(`Установить новый пароль игроков: "${newPass}"? Старые пароли игроков перестанут работать.`)) {
+        db.ref('allowedPasswords').remove().then(() => {
+          db.ref('allowedPasswords/' + newPass).set(true).then(() => {
+            alert('Пароль игроков обновлён: ' + newPass);
+            document.getElementById('admin-player-pass').value = '';
+          }).catch(err => alert('Ошибка записи: ' + err.message));
+        }).catch(err => alert('Ошибка удаления старых паролей: ' + err.message));
+      }
+    });
+    document.getElementById('btn-set-game-date').addEventListener('click', () => {
+      if (!isAdmin) return;
+      const dd = parseInt(document.getElementById('admin-game-day').value);
+      const mm = parseInt(document.getElementById('admin-game-month').value);
+      const yyyy = parseInt(document.getElementById('admin-game-year').value);
+      if (!dd || !mm || !yyyy || dd < 1 || dd > 31 || mm < 1 || mm > 12 || yyyy < 1900) {
+        alert('Заполните корректно день, месяц и год (например 17 / 10 / 2013).'); return;
+      }
+      const val = `${yyyy}-${mm.toString().padStart(2,'0')}-${dd.toString().padStart(2,'0')}`;
+      if (confirm(`Установить игровую дату ${dd}.${mm}.${yyyy} для всех? Время дальше пойдёт само (48 реал. мин = 1 игровые сутки).`)) {
+        setGameDate(val);
+      }
+    });
+    document.getElementById('btn-admin-newmap').addEventListener('click', () => {
+      if (confirm('Заменить карту для ВСЕХ игроков? Текущая картинка будет удалена.')) db.ref('mapImage').remove();
+    });
+    document.getElementById('btn-admin-wipe-cities').addEventListener('click', () => {
+      if (confirm('Удалить ВСЕ города у всех игроков? Действие нельзя отменить.')) db.ref('cities').remove();
+    });
+    document.getElementById('btn-admin-wipe-fleet').addEventListener('click', () => {
+      if (confirm('Удалить ВСЕ самолёты у ВСЕХ игроков? Действие нельзя отменить.')) db.ref('fleet').remove();
+    });
+    document.getElementById('btn-admin-wipe-flights').addEventListener('click', () => {
+      if (confirm('Удалить ВСЕ активные рейсы? Действие нельзя отменить.')) db.ref('flights').remove();
+    });
+    document.getElementById('btn-admin-wipe-all').addEventListener('click', () => {
+      if (confirm('ПОЛНЫЙ ВАЙП: города, самолёты, рейсы и карта будут удалены у ВСЕХ. Точно продолжить?')) {
+        db.ref('cities').remove(); db.ref('flights').remove(); db.ref('fleet').remove(); db.ref('mapImage').remove();
+      }
+    });
+
+    // --- ЦИКЛ ОТРИСОВКИ РАДАРА (читает общие данные, считает движение локально для плавности) ---
+    function updateAndRender() {
+      updateClock(); ctx.clearRect(0, 0, 2000, 2000);
+      ctx.strokeStyle = "rgba(0, 255, 204, 0.05)"; ctx.lineWidth = 1;
+      for (let x = 0; x < 2000; x += gridSize) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 2000); ctx.stroke(); }
+      for (let y = 0; y < 2000; y += gridSize) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(2000, y); ctx.stroke(); }
+      const wKm = parseFloat(document.getElementById('map-width-km').value) || 300; const hKm = parseFloat(document.getElementById('map-height-km').value) || 300;
+
+      const flightList = Object.values(activeFlights);
+      document.getElementById('total-flights').innerText = `Бортов: ${flightList.length}`;
+
+      flightList.forEach(f => {
+        let start = f.isReturning ? f.toCity : f.fromCity; let end = f.isReturning ? f.fromCity : f.toCity;
+        const dx = end.x - start.x; const dy = end.y - start.y; const dPx = Math.hypot(dx, dy);
+        const dKm = dPx * (Math.sqrt(wKm*wKm + hKm*hKm) / Math.sqrt(8000000));
+        let cSp = f.meta.maxSpeed; let cAlM = 10000; // высота в метрах для расчётов
+
+        if (f.progress < 0.15) { f.status = "🛫 Набор эшелона"; f.speed = 200 + (cSp - 200) * (f.progress / 0.15); f.altitudeM = cAlM * (f.progress / 0.15); }
+        else if (f.progress > 0.85) { f.status = "🛬 Снижение/Посадка"; f.speed = cSp - (cSp - 180) * ((f.progress - 0.85) / 0.15); f.altitudeM = cAlM * (1 - (f.progress - 0.85) / 0.15); }
+        else { f.status = "✈️ В эшелоне"; f.speed = cSp; f.altitudeM = cAlM; }
+
+        f.progress += ((f.speed / 3600) * 0.05 * (1440 / 42)) / dKm;
+        let justLanded = false;
+        if (f.progress >= 1) { f.progress = 0; f.isReturning = !f.isReturning; f.actualLoad = Math.floor(Math.random()*f.meta.maxLoad); justLanded = true; }
+
+        let tx = start.x + dx * f.progress; let ty = start.y + dy * f.progress;
+        if (dKm > 50) { const sA = Math.sin(f.progress * Math.PI); tx += (-dy / dPx) * (dPx * 0.15) * sA; ty += (dx / dPx) * (dPx * 0.15) * sA; }
+        f.curX = tx; f.curY = ty;
+
+        // Сохраняем обновлённое состояние рейса в базу, чтобы остальные игроки видели то же самое
+        db.ref('flights/' + f.id).update({ progress: f.progress, curX: f.curX, curY: f.curY, status: f.status, speed: f.speed, altitudeM: f.altitudeM, isReturning: f.isReturning, actualLoad: f.actualLoad });
+
+        ctx.strokeStyle = "rgba(0, 255, 204, 0.15)"; ctx.beginPath(); ctx.moveTo(start.x, start.y);
+        for(let p=0; p<=1; p+=0.05) { let lx = start.x + dx * p; let ly = start.y + dy * p; if (dKm > 50) { const sA = Math.sin(p * Math.PI); lx += (-dy / dPx) * (dPx * 0.15) * sA; ly += (dx / dPx) * (dPx * 0.15) * sA; } ctx.lineTo(lx, ly); }
+        ctx.stroke();
+
+        ctx.save(); ctx.translate(f.curX, f.curY); ctx.rotate(Math.atan2(dy, dx)); ctx.strokeStyle = f.progress > 0.15 && f.progress < 0.85 ? "#00ffcc" : "#ffcc00"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(12, 0); ctx.moveTo(0, -10); ctx.lineTo(3, 0); ctx.lineTo(0, 10); ctx.moveTo(-8, -4); ctx.lineTo(-6, 0); ctx.lineTo(-8, 4); ctx.stroke(); ctx.restore();
+        ctx.fillStyle = "rgba(0,255,204,0.8)"; ctx.font = "11px monospace"; ctx.fillText(f.meta.name, f.curX + 15, f.curY - 5);
+        const altFt = Math.round((f.altitudeM || 0) * FT_PER_M);
+        ctx.fillStyle = "#aaa"; ctx.fillText(`${altFt}фт`, f.curX + 15, f.curY + 8);
+        ctx.fillStyle = "#ffaa00"; ctx.font = "10px monospace"; ctx.fillText(f.createdBy || f.meta.owner || '?', f.curX + 15, f.curY + 20);
+      });
+
+      Object.values(cities).forEach(c => { 
+        ctx.fillStyle = "#ff007f"; ctx.beginPath(); ctx.arc(c.x, c.y, 6, 0, Math.PI*2); ctx.fill(); ctx.strokeStyle = "#fff"; ctx.beginPath(); ctx.arc(c.x, c.y, 8, 0, Math.PI*2); ctx.stroke(); 
+        ctx.fillStyle = "#fff"; ctx.font = "bold 13px sans-serif"; ctx.fillText(c.name, c.x + 12, c.y + 4); 
+        if (c.createdBy) { ctx.fillStyle = "#ffaa00"; ctx.font = "10px monospace"; ctx.fillText(c.createdBy, c.x + 12, c.y + 17); }
+      });
+      
+      if(selectedFlightInfo) { 
+        let cur = activeFlights[selectedFlightInfo.id]; 
+        if(cur) { 
+          const altFt = Math.round((cur.altitudeM || 0) * FT_PER_M);
+          document.getElementById('info-name').innerText = cur.meta.name; document.getElementById('info-status').innerText = cur.status; document.getElementById('info-speed').innerText = Math.round(cur.speed); document.getElementById('info-altitude').innerText = altFt; 
+          document.getElementById('info-load').innerText = `${cur.actualLoad} из ${cur.meta.maxLoad} (${cur.meta.type === 'Грузовой' ? 'кг' : 'чел'})`;
+          document.getElementById('info-owner').innerText = cur.createdBy || cur.meta.owner || '?';
+        } else {
+          document.getElementById('info-panel').style.display = 'none'; selectedFlightInfo = null;
+        }
+      }
+    }
+    setInterval(updateAndRender, 50);
+
+    } // конец startApp()
+  </script>
+</body>
+</html>
