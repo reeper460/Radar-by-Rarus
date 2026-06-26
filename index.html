@@ -41,7 +41,7 @@
     #user-badge { position: fixed; top: 10px; right: 10px; z-index: 101; background: var(--pb); border: 1px solid var(--ng); border-radius: 6px; padding: 6px 10px; font-size: 0.85rem; }
     #user-badge.is-admin { border-color: var(--danger); color: var(--danger); }
 
-    #admin-panel { position: fixed; right: 10px; top: 120px; width: 250px; max-width: calc(100vw - 20px); z-index: 110; background: var(--pb); border: 1px solid var(--danger); border-radius: 8px; padding: 10px; display: none; flex-direction: column; gap: 6px; max-height: 75vh; overflow-y: auto; }
+    #admin-panel { position: fixed; right: 10px; top: 120px; width: 300px; max-width: calc(100vw - 20px); z-index: 110; background: var(--pb); border: 1px solid var(--danger); border-radius: 8px; padding: 10px; display: none; flex-direction: column; gap: 6px; max-height: 75vh; overflow-y: auto; }
   </style>
 </head>
 <body>
@@ -115,7 +115,7 @@
     <button class="btn btn-danger" id="btn-set-player-pass">🔑 Установить пароль игроков</button>
     <div style="border-top:1px solid #442222; margin:4px 0;"></div>
     <button class="btn btn-danger" id="btn-show-nicks">📋 Список ников игроков</button>
-    <div id="nicks-list" style="display:none; max-height:150px; overflow-y:auto; font-size:0.85rem; background:#000; padding:6px; border-radius:4px;"></div>
+    <div id="nicks-list" style="display:none; max-height:320px; overflow-y:auto; font-size:0.95rem; line-height:1.5; background:#000; padding:10px; border-radius:4px;"></div>
     <div style="border-top:1px solid #442222; margin:4px 0;"></div>
     <button class="btn btn-danger" id="btn-admin-wipe-cities">🏙️ Удалить все города</button>
     <button class="btn btn-danger" id="btn-admin-wipe-fleet">✈️ Удалить все самолёты</button>
@@ -190,6 +190,15 @@
     let currentNick = null;
     let isAdmin = false;
 
+    let currentIP = null;
+
+    function getMyIP() {
+      return fetch('https://api.ipify.org?format=json')
+        .then(r => r.json())
+        .then(data => data.ip)
+        .catch(() => null); // если IP не получить — не блокируем вход, просто баним без IP-привязки
+    }
+
     document.getElementById('btn-login').addEventListener('click', () => {
       const nick = document.getElementById('login-nick').value.trim();
       const pass = document.getElementById('login-pass').value;
@@ -198,28 +207,48 @@
       if (!nick) { errEl.textContent = 'Введите игровой ник.'; return; }
       if (!pass) { errEl.textContent = 'Введите пароль.'; return; }
 
-      // Проверяем пароль через базу (список разрешённых паролей игроков хранится в Firebase)
-      db.ref('allowedPasswords/' + pass).once('value').then(snap => {
-        const isAdminPass = (pass === ADMIN_PASSWORD);
-        if (isAdminPass || snap.exists()) {
-          currentNick = nick;
-          isAdmin = isAdminPass;
-          // Сохраняем факт регистрации ника под этим паролем, чтобы админ мог посмотреть кто забыл свой ник.
-          // Пароль не хранится в открытом виде рядом с ником в отдельном читаемом поле — только связь "ник вошёл этим паролем", без самого текста пароля.
-          db.ref('registeredNicks/' + nick).set({ lastLogin: Date.now(), isAdmin: isAdminPass });
-          document.getElementById('login-screen').style.display = 'none';
-          document.getElementById('user-badge').style.display = 'block';
-          document.getElementById('user-badge').classList.toggle('is-admin', isAdmin);
-          document.getElementById('badge-nick').textContent = nick + (isAdmin ? ' (АДМИН)' : '');
-          document.getElementById('btn-toggle-admin').style.display = isAdmin ? 'inline-block' : 'none';
-          document.getElementById('map-width-km').readOnly = !isAdmin;
-          document.getElementById('map-height-km').readOnly = !isAdmin;
-          startApp();
-        } else {
-          errEl.textContent = 'Неверный пароль. Спросите пароль у админа сервера.';
-        }
-      }).catch(() => {
-        errEl.textContent = 'Не удалось подключиться к серверу. Проверьте Firebase-настройки.';
+      errEl.textContent = 'Проверка...';
+
+      getMyIP().then(ip => {
+        currentIP = ip;
+        const ipKey = ip ? ip.replace(/\./g, '_') : null;
+
+        // Проверяем бан по нику и по IP параллельно, прежде чем пускать дальше
+        Promise.all([
+          db.ref('bannedNicks/' + nick).once('value'),
+          ipKey ? db.ref('bannedIPs/' + ipKey).once('value') : Promise.resolve({ exists: () => false })
+        ]).then(([banNickSnap, banIpSnap]) => {
+          if (banNickSnap.exists() || banIpSnap.exists()) {
+            errEl.textContent = 'Доступ заблокирован на сервере.';
+            return;
+          }
+
+          // Проверяем пароль через базу (список разрешённых паролей игроков хранится в Firebase)
+          db.ref('allowedPasswords/' + pass).once('value').then(snap => {
+            const isAdminPass = (pass === ADMIN_PASSWORD);
+            if (isAdminPass || snap.exists()) {
+              currentNick = nick;
+              isAdmin = isAdminPass;
+              // Сохраняем факт регистрации ника под этим паролем (плюс последний известный IP, нужно для возможного бана), чтобы админ мог посмотреть кто забыл свой ник.
+              // Пароль не хранится в открытом виде рядом с ником в отдельном читаемом поле — только связь "ник вошёл этим паролем", без самого текста пароля.
+              db.ref('registeredNicks/' + nick).set({ lastLogin: Date.now(), isAdmin: isAdminPass, lastIP: ip || null });
+              document.getElementById('login-screen').style.display = 'none';
+              document.getElementById('user-badge').style.display = 'block';
+              document.getElementById('user-badge').classList.toggle('is-admin', isAdmin);
+              document.getElementById('badge-nick').textContent = nick + (isAdmin ? ' (АДМИН)' : '');
+              document.getElementById('btn-toggle-admin').style.display = isAdmin ? 'inline-block' : 'none';
+              document.getElementById('map-width-km').readOnly = !isAdmin;
+              document.getElementById('map-height-km').readOnly = !isAdmin;
+              startApp();
+            } else {
+              errEl.textContent = 'Неверный пароль. Спросите пароль у админа сервера.';
+            }
+          }).catch(() => {
+            errEl.textContent = 'Не удалось подключиться к серверу. Проверьте Firebase-настройки.';
+          });
+        }).catch(() => {
+          errEl.textContent = 'Не удалось проверить статус бана. Попробуйте снова.';
+        });
       });
     });
 
@@ -477,16 +506,77 @@
 
     // --- АДМИН-ПАНЕЛЬ ---
     document.getElementById('btn-show-nicks').addEventListener('click', () => {
+      if (!isAdmin) return;
       const el = document.getElementById('nicks-list');
       if (el.style.display === 'block') { el.style.display = 'none'; return; }
-      db.ref('registeredNicks').once('value').then(snap => {
-        const data = snap.val() || {};
-        const rows = Object.keys(data).sort().map(nick => {
+      Promise.all([
+        db.ref('registeredNicks').once('value'),
+        db.ref('bannedNicks').once('value')
+      ]).then(([nicksSnap, bannedSnap]) => {
+        const data = nicksSnap.val() || {};
+        const banned = bannedSnap.val() || {};
+        el.innerHTML = '';
+        const sortedNicks = Object.keys(data).sort();
+        if (!sortedNicks.length) { el.innerHTML = 'Пока никто не входил.'; return; }
+        sortedNicks.forEach(nick => {
           const v = data[nick];
           const dt = new Date(v.lastLogin).toLocaleString('ru-RU');
-          return `${v.isAdmin ? '🛠️' : '👤'} ${nick} — посл. вход: ${dt}`;
+          const isBanned = !!banned[nick];
+
+          const row = document.createElement('div');
+          row.style.display = 'flex'; row.style.alignItems = 'center'; row.style.gap = '6px'; row.style.marginBottom = '4px';
+
+          const label = document.createElement('div');
+          label.style.flex = '1';
+          label.style.opacity = isBanned ? '0.5' : '1';
+          const ipNote = v.lastIP ? ` (IP: ${v.lastIP})` : ' (IP неизвестен)';
+          label.textContent = `${v.isAdmin ? '🛠️' : '👤'} ${nick}${isBanned ? ' [ЗАБАНЕН]' : ''} — посл. вход: ${dt}${ipNote}`;
+          row.appendChild(label);
+
+          if (!v.isAdmin) {
+            const banBtn = document.createElement('button');
+            banBtn.className = 'btn btn-danger'; banBtn.style.padding = '4px 8px'; banBtn.style.fontSize = '0.8rem';
+            banBtn.textContent = isBanned ? '✅ Разбан' : '🚫 Бан';
+            banBtn.onclick = () => {
+              const ipKey = v.lastIP ? v.lastIP.replace(/\./g, '_') : null;
+              if (isBanned) {
+                if (confirm(`Разбанить "${nick}" (и его IP, если был забанен)?`)) {
+                  const tasks = [db.ref('bannedNicks/' + nick).remove()];
+                  if (ipKey) tasks.push(db.ref('bannedIPs/' + ipKey).remove());
+                  Promise.all(tasks).then(() => {
+                    el.style.display = 'none';
+                    document.getElementById('btn-show-nicks').click();
+                  });
+                }
+              } else {
+                const ipMsg = ipKey ? `\nЕго IP (${v.lastIP}) тоже будет заблокирован.` : '\nIP неизвестен — заблокируется только ник (слабая защита, он может зайти под другим ником).';
+                if (confirm(`Забанить "${nick}"? Все его города, борты и рейсы будут удалены.${ipMsg}`)) {
+                  db.ref('bannedNicks/' + nick).set(true);
+                  if (ipKey) db.ref('bannedIPs/' + ipKey).set(true);
+                  db.ref('fleet/' + nick).remove();
+                  db.ref('cities').once('value').then(citySnap => {
+                    const allCities = citySnap.val() || {};
+                    Object.keys(allCities).forEach(cid => {
+                      if (allCities[cid].createdBy === nick) db.ref('cities/' + cid).remove();
+                    });
+                  });
+                  db.ref('flights').once('value').then(flightSnap => {
+                    const allFlights = flightSnap.val() || {};
+                    Object.keys(allFlights).forEach(fid => {
+                      if (allFlights[fid].createdBy === nick) db.ref('flights/' + fid).remove();
+                    });
+                  });
+                  alert(`Игрок "${nick}" забанен, его объекты удаляются.`);
+                  el.style.display = 'none';
+                  document.getElementById('btn-show-nicks').click();
+                }
+              }
+            };
+            row.appendChild(banBtn);
+          }
+
+          el.appendChild(row);
         });
-        el.innerHTML = rows.length ? rows.join('<br>') : 'Пока никто не входил.';
         el.style.display = 'block';
       });
     });
@@ -518,18 +608,23 @@
       }
     });
     document.getElementById('btn-admin-newmap').addEventListener('click', () => {
+      if (!isAdmin) return;
       if (confirm('Заменить карту для ВСЕХ игроков? Текущая картинка будет удалена.')) db.ref('mapImage').remove();
     });
     document.getElementById('btn-admin-wipe-cities').addEventListener('click', () => {
+      if (!isAdmin) return;
       if (confirm('Удалить ВСЕ города у всех игроков? Действие нельзя отменить.')) db.ref('cities').remove();
     });
     document.getElementById('btn-admin-wipe-fleet').addEventListener('click', () => {
+      if (!isAdmin) return;
       if (confirm('Удалить ВСЕ самолёты у ВСЕХ игроков? Действие нельзя отменить.')) db.ref('fleet').remove();
     });
     document.getElementById('btn-admin-wipe-flights').addEventListener('click', () => {
+      if (!isAdmin) return;
       if (confirm('Удалить ВСЕ активные рейсы? Действие нельзя отменить.')) db.ref('flights').remove();
     });
     document.getElementById('btn-admin-wipe-all').addEventListener('click', () => {
+      if (!isAdmin) return;
       if (confirm('ПОЛНЫЙ ВАЙП: города, самолёты, рейсы и карта будут удалены у ВСЕХ. Точно продолжить?')) {
         db.ref('cities').remove(); db.ref('flights').remove(); db.ref('fleet').remove(); db.ref('mapImage').remove();
       }
@@ -601,4 +696,4 @@
     } // конец startApp()
   </script>
 </body>
-</html>
+  </html>
